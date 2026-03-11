@@ -13,7 +13,7 @@ import numpy as np
 from itertools import chain
 import random
 
-from myGym.utils.helpers import get_workspace_dict, get_robot_dict
+from myGym.utils.helpers import get_workspace_dict
 import importlib.resources as pkg_resources
 from myGym.envs.human import Human
 import myGym.utils.colors as cs
@@ -105,11 +105,6 @@ class GymEnv(CameraEnv):
         self.workspace              = workspace
         self.obs_type = observation
         self.robot_type             = robot
-        # Get robot_fixed from r_dict - use .get() for safety
-        robot_dict = get_robot_dict()
-        if robot not in robot_dict:
-            raise ValueError(f"Unknown robot type: {robot}. Available robots: {list(robot_dict.keys())}")
-        self.robot_fixed            = robot_dict[robot].get('fixed', True)
         self.num_networks           = num_networks
         self.network_switcher       = network_switcher
         self.robot_init_joint_poses = robot_init_joint_poses
@@ -149,12 +144,11 @@ class GymEnv(CameraEnv):
 
         self.reach_gesture = False
         if self.task_type == "reach_gesture":
-            if self.workspace != "collabtable":
-                exc = f"Expected collabtable workspace when the reach_gesture task is passed, got {self.workspace} instead"
-                raise Exception(exc)
+            if self.workspace not in ["collabtable", "table_human"]:
+                print(f"Warning: reach_gesture task typically uses collabtable or table_human workspace, got {self.workspace}")
 
             self.reach_gesture = True
-            self.task_type = "reach"
+            self.task_type = "AG"
 
         self.nl_mode = natural_language
         if self.nl_mode:
@@ -170,8 +164,7 @@ class GymEnv(CameraEnv):
         self.rng = np.random.default_rng(seed=0)
         self.task_objects_were_given_as_list = isinstance(self.task_objects_dict, list)
         self.n_subtasks = len(self.task_objects_dict) if self.task_objects_were_given_as_list else 1
-        if self.reach_gesture and not self.nl_mode:
-            raise Exception("Reach gesture task can't be started without natural language mode")
+        # reach_gesture no longer requires nl_mode
 
         super(GymEnv, self).__init__(active_cameras=active_cameras, **kwargs)
 
@@ -277,12 +270,16 @@ class GymEnv(CameraEnv):
                   "orientation": self.workspace_dict[self.workspace]['robot']['orientation'],
                   "init_joint_poses": self.robot_init_joint_poses, "fixed_end_effector_orn": endeff_orn,
                   "max_velocity": self.max_velocity, "max_force": self.max_force, "dimension_velocity": self.dimension_velocity,
-                  "pybullet_client": self.p, "reward_type": self.unwrapped.reward, "use_fixed_base": self.robot_fixed}
+                  "pybullet_client": self.p, "reward_type": self.unwrapped.reward}
         self.robot = robot.Robot(self.robot_type, robot_action=self.robot_action, task_type=self.task_type, **kwargs)
         # if "tiago" in self.robot_type:
         #     #TODO: set a proper init state value for tiago joints, so that IK works well
         #     self.p.resetJointState(self.robot.robot_uid, self.robot.motor_indices[2], 1.7)
-        if self.workspace == 'collabtable': self.human = Human(model_name='human', pybullet_client=self.p)
+        # Load human for collaborative workspaces or gesture-based tasks
+        if self.workspace in ['collabtable', 'table_human'] or self.reach_gesture:
+            self.human = Human(model_name='human', pybullet_client=self.p)
+            self.human_target_object = None  # Will be set on reset
+            self.gesture_cubes = []  # Store the 3 cubes for gesture task
 
 
     def _load_urdf(self, path, fixedbase=True, maxcoords=True):
@@ -336,10 +333,10 @@ class GymEnv(CameraEnv):
         Set action space dimensions and range
         """
         from gymnasium import spaces
-        #action_dim = self.robot.get_action_dimension()
+        action_dim = self.robot.get_action_dimension()
         if "step" in self.robot_action:
-            self.action_low = np.array([-1] * 3)
-            self.action_high = np.array([1] * 3)
+            self.action_low = np.array([-1] * action_dim)
+            self.action_high = np.array([1] * action_dim)
 
 
         elif "absolute" in self.robot_action:
@@ -390,6 +387,10 @@ class GymEnv(CameraEnv):
         """
         #super().reset(seed=seed)
         if not only_subtask:
+            # Clear gesture_cubes before parent reset to avoid double removal
+            # (parent's _remove_all_objects will handle the actual removal)
+            if hasattr(self, 'gesture_cubes'):
+                self.gesture_cubes = []
             self.robot.reset(random_robot=random_robot)
             super().reset(hard=hard)
 
@@ -405,9 +406,45 @@ class GymEnv(CameraEnv):
                         task_objects_dict = [{"init": init, "goal": goal}]
                         other_objects = self._randomly_place_objects({"obj_list": [o for o in objects if o != init and o != goal]})
                     else:
-                        goal = self.rng.choice(self.task_objects_dict["goal"])
-                        task_objects_dict = [{"init": {"obj_name":"null"}, "goal": goal}]
-                        other_objects = self._randomly_place_objects({"obj_list": [o for o in self.task_objects_dict["goal"] if o != goal]})
+                        # Gesture-based task: spawn all goal objects, human selects one randomly
+                        goal_objects = self._spawn_gesture_cubes()
+
+                        # Human randomly selects and points at one cube
+                        if hasattr(self, 'human') and goal_objects:
+                            selected_goal, _ = self.human.select_random_target_and_point(
+                                goal_objects, num_targets=3
+                            )
+                            self.human_target_object = selected_goal
+
+                            # Highlight the selected goal
+                            self.highlight_active_object(selected_goal, "goal")
+
+                            # Gray out other cubes
+                            for obj in goal_objects:
+                                if obj != selected_goal:
+                                    self.highlight_active_object(obj, "other")
+                        else:
+                            # Fallback if no human: randomly select
+                            selected_goal = self.rng.choice(goal_objects)
+                            self.highlight_active_object(selected_goal, "goal")
+                            for obj in goal_objects:
+                                if obj != selected_goal:
+                                    self.highlight_active_object(obj, "other")
+
+                        # Set up task objects: init is robot (null), goal is selected cube
+                        self.task_objects = {"actual_state": self.robot, "goal_state": selected_goal}
+                        self.gesture_cubes = goal_objects
+                        other_objects = [o for o in goal_objects if o != selected_goal]
+
+                        # Set env_objects and skip the normal flow below
+                        self.env_objects = {"env_objects": other_objects + self._randomly_place_objects(self.used_objects)}
+                        self.env_objects = {**self.task_objects, **self.env_objects}
+                        self.task.reset_task()
+                        self.unwrapped.reward.reset()
+                        self.p.stepSimulation()
+                        self._observation = self.get_observation()
+                        info = {'d': 1, 'f': int(self.episode_failed), 'o': self._observation}
+                        return self.flatten_obs(self._observation.copy()), info
 
                 all_subtask_objects = [x for i, x in enumerate(task_objects_dict) if i != self.task.current_task]
                 subtasks_processed = [list(x.values()) for x in all_subtask_objects]
@@ -469,7 +506,7 @@ class GymEnv(CameraEnv):
                 # will set the task and the reward
                 self._set_observation_space()
         if only_subtask:
-            if self.task.current_task < (len(self.task_objects_dict)) and not self.nl_mode:
+            if self.task.current_task < (len(self.task_objects_dict)) and not self.nl_mode and not self.reach_gesture:
                 self.shift_next_subtask()
         if self.has_distractor:
             distrs = []
@@ -484,6 +521,13 @@ class GymEnv(CameraEnv):
         self.env_objects = {**self.task_objects, **self.env_objects}
         self.task.reset_task()
         self.unwrapped.reward.reset()
+
+        # Make human randomly select and point at an object
+        if hasattr(self, 'human'):
+            all_objects = self.get_task_objects()
+            if all_objects:
+                self.human_target_object, _ = self.human.select_random_target_and_point(all_objects, num_targets=3)
+
         self.p.stepSimulation()
         self._observation = self.get_observation()
         info = {'d': 1, 'f': int(self.episode_failed),
@@ -603,7 +647,12 @@ class GymEnv(CameraEnv):
             objects = self.env_objects
             self.robot.apply_action(action, env_objects=objects)
             if hasattr(self, "human"):
-                self.human.point_finger_at(position=self.task_objects["goal_state"].get_position())
+                # Point at the randomly selected target object, fallback to goal_state
+                target = getattr(self, 'human_target_object', None)
+                if target is None or not hasattr(target, 'get_position'):
+                    target = self.task_objects.get("goal_state")
+                if target is not None and hasattr(target, 'get_position'):
+                    self.human.point_finger_at(position=target.get_position(), use_pointing_ik=True)
             self.p.stepSimulation()
         self.episode_steps += 1
         
@@ -634,6 +683,58 @@ class GymEnv(CameraEnv):
             if key_pressed:
                 self.p.stepSimulation()
 
+    def get_object_pointed_by_human(self) -> EnvObject:
+        """
+        Get the object that the human is currently pointing at.
+
+        Returns:
+            :return: (EnvObject) The object the human is pointing at, or None
+        """
+        if not hasattr(self, "human"):
+            return None
+        all_objects = self.get_task_objects()
+        if not all_objects:
+            return None
+        return self.human.find_object_human_is_pointing_at(all_objects)
+
+    def update_goal_from_gesture(self) -> bool:
+        """
+        Update the current goal based on human gesture (pointing).
+
+        Returns:
+            :return: (bool) True if goal was updated, False otherwise
+        """
+        if not hasattr(self, "human"):
+            return False
+
+        all_objects = self.get_task_objects()
+        if not all_objects:
+            return False
+
+        pointed_obj = self.human.find_object_human_is_pointing_at(all_objects)
+        if pointed_obj is not None:
+            self.task_objects["goal_state"] = pointed_obj
+            self.human_target_object = pointed_obj
+            self.highlight_active_object(pointed_obj, "goal")
+            return True
+        return False
+
+    def get_human_gesture_observation(self) -> dict:
+        """
+        Get observation data related to human gesture.
+
+        Returns:
+            :return: (dict) Dictionary containing gesture-related observations
+        """
+        if not hasattr(self, "human"):
+            return {}
+
+        gesture_obs = {
+            "human_pointing_target": list(self.human.get_tiago_goal_from_pointing()),
+            "human_target_object": self.human_target_object.get_name() if self.human_target_object else None,
+        }
+        return gesture_obs
+
     def draw_bounding_boxes(self):
         """
         Show bounding box of object in the scene in GUI
@@ -648,6 +749,66 @@ class GymEnv(CameraEnv):
         object = env_object.EnvObject(obj_info["urdf"], pos, orn, pybullet_client=self.p, fixed=fixed)
         if self.color_dict: object.set_color(self.color_of_object(object))
         return object
+
+    def _spawn_gesture_cubes(self) -> List[EnvObject]:
+        """
+        Spawn 3 cubes with different colors for the gesture-based task.
+        Removes any existing gesture cubes first.
+
+        Returns:
+            :return: (List[EnvObject]) List of spawned cube objects
+        """
+        # Remove existing gesture cubes if any
+        self._remove_gesture_cubes()
+
+        # Define the 3 cube colors (red, green, blue for clear distinction)
+        cube_colors = [
+            cs.name_to_rgba("red"),
+            cs.name_to_rgba("green"),
+            cs.name_to_rgba("cyan")
+        ]
+
+        # Get the object definitions from task_objects_dict
+        if isinstance(self.task_objects_dict, dict) and "goal" in self.task_objects_dict:
+            goal_objects = self.task_objects_dict["goal"]
+        else:
+            # Default cube configuration if not specified
+            goal_objects = [
+                {"obj_name": "cube", "fixed": 0, "rand_rot": 0, "sampling_area": self.objects_area_borders}
+            ] * 3
+
+        spawned_cubes = []
+        for i, color in enumerate(cube_colors):
+            # Get object info (cycle through available objects if less than 3)
+            if i < len(goal_objects):
+                obj_info = copy.deepcopy(goal_objects[i])
+            else:
+                obj_info = copy.deepcopy(goal_objects[0])
+
+            # Get URDF path
+            urdf = self._get_urdf_filename(obj_info["obj_name"])
+            if urdf is None:
+                urdf = self._get_urdf_filename("cube")  # Fallback to cube
+            obj_info["urdf"] = urdf
+
+            # Spawn the cube
+            cube = self._place_object(obj_info)
+            cube.set_color(color)
+            spawned_cubes.append(cube)
+
+        self.gesture_cubes = spawned_cubes
+        return spawned_cubes
+
+    def _remove_gesture_cubes(self):
+        """Remove all gesture cubes from the scene."""
+        if hasattr(self, 'gesture_cubes') and self.gesture_cubes:
+            for cube in self.gesture_cubes:
+                if cube is not None and hasattr(cube, 'uid'):
+                    try:
+                        self.p.removeBody(cube.uid)
+                    except Exception:
+                        pass
+            self.gesture_cubes = []
 
     def _randomly_place_objects(self, object_dict):
         """

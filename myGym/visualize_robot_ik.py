@@ -6,9 +6,47 @@ import numpy as np
 from numpy import rad2deg, deg2rad, set_printoptions, array, linalg, round, any, mean
 from myGym.utils.helpers import get_robot_dict
 from myGym.utils.helpers import get_workspace_dict
-from myGym.utils.helpers import get_gripper_dict
 import importlib.resources as pkg_resources
 import os
+
+def get_pointing_quaternion(ee_pos, target_pos):
+    """
+    Calculates a quaternion to orient an end effector at ee_pos to point at target_pos.
+    This is achieved by calculating the required yaw and pitch from the direction vector.
+
+    Args:
+        ee_pos (list or np.array): The end effector position.
+        target_pos (list or np.array): The position to point at.
+
+    Returns:
+        list: A quaternion [x, y, z, w].
+    """
+    # Ensure inputs are numpy arrays
+    ee_pos = np.array(ee_pos)
+    target_pos = np.array(target_pos)
+
+    # Calculate the direction vector from the end effector to the target
+    direction = target_pos - ee_pos
+
+    # Handle case where the target is at the same position as the end effector
+    if np.linalg.norm(direction) < 1e-6:
+        return [0, 0, 0, 1]  # Return identity quaternion (no rotation)
+
+    # Calculate Yaw (rotation around Z-axis)
+    # This determines the left-right direction
+    yaw = np.arctan2(direction[1], direction[0])
+
+    # Calculate Pitch (rotation around Y-axis)
+    # This determines the up-down direction
+    # The horizontal distance is the length of the projection onto the XY plane
+    horizontal_dist = np.sqrt(direction[0]**2 + direction[1]**2)
+    pitch = np.arctan2(-direction[2], horizontal_dist)
+
+    # Roll is 0 for simple pointing
+    roll = 0
+
+    # Convert the Euler angles (roll, pitch, yaw) to a quaternion
+    return p.getQuaternionFromEuler([roll, pitch, yaw])
 
 def save_robot_dict_to_helpers(rd, helpers_path):
     """Save updated robot dictionary back to helpers.py file."""
@@ -104,7 +142,6 @@ def apply_ik_solution(robot_id, ik_solution, joint_idxs):
             force= 500
         )
         joint_values.append(f"{p.getJointInfo(robot_id, joint_idx)[1].decode('utf-8')}: {joint_pos:.4f} rad ({joint_pos*57.2958:.2f}°)")
-    
     return joint_values
 
 def find_gripper_joints(robot_id):
@@ -463,6 +500,10 @@ def main():
     # Get path to helpers.py
     helpers_path = os.path.join(os.path.dirname(__file__), 'utils', 'helpers.py')
     
+    # Pointing mode - always enabled for human robot
+    is_human_robot = selected_key is not None and 'human' in selected_key.lower()
+    pointing_line_id = None  # Line between ee and target for pointing visualization
+
     try:
         while True:
             # Check keyboard events first to potentially switch targets
@@ -504,46 +545,20 @@ def main():
                 else:
                     print("No robot key selected, cannot save to helpers.py")
             
-            # Check if 'c' key is pressed to open the gripper (set gripper joints to open values from helpers.py)
-            if ord('o') in keys and keys[ord('o')] & p.KEY_WAS_TRIGGERED:
-                # Get gripper dictionary and open values for selected robot
-                gd = get_gripper_dict()
-                if selected_key and selected_key in gd and 'open' in gd[selected_key]:
-                    open_values = gd[selected_key]['open']
-                    print(f"Opening gripper for {selected_key} (using open values from helpers.py): {open_values}")
-                    apply_ik_solution(robot_id, open_values, gripper_idxs)
-                    # Step simulation for 40 steps
-                    for _ in range(40):
-                        p.stepSimulation()
-                        time.sleep(0.01)
-                else:
-                    print(f"No open values found for robot '{selected_key}' in gripper dict, using lower limits")
-                    apply_ik_solution(robot_id, gripper_low_limits, gripper_idxs)
-                    print(gripper_low_limits)
-                    # Step simulation for 40 steps
-                    for _ in range(40):
-                        p.stepSimulation()
-                        time.sleep(0.01)
-
+            # Check if 'c' key is pressed to close the gripper (set gripper joints to 0)
             if ord('c') in keys and keys[ord('c')] & p.KEY_WAS_TRIGGERED:
-                # Get gripper dictionary and close values for selected robot
-                gd = get_gripper_dict()
-                if selected_key and selected_key in gd and 'close' in gd[selected_key]:
-                    close_values = gd[selected_key]['close']
-                    print(f"Closing gripper for {selected_key} (using close values from helpers.py): {close_values}")
-                    apply_ik_solution(robot_id, close_values, gripper_idxs)
-                    # Step simulation for 40 steps
-                    for _ in range(40):
-                        p.stepSimulation()
-                        time.sleep(0.01)
-                else:
-                    print(f"No close values found for robot '{selected_key}' in gripper dict, using upper limits")
-                    apply_ik_solution(robot_id, gripper_up_limits, gripper_idxs)
-                    # Step simulation for 40 steps
-                    for _ in range(40):
-                        p.stepSimulation()
-                        time.sleep(0.01)
-                    print(gripper_up_limits)
+                # Move gripper joints to their individual lower limits
+                print("Closing gripper (moving to lower joint limits)")
+                apply_ik_solution(robot_id, gripper_low_limits, gripper_idxs)
+                print(gripper_low_limits)
+                # grasper.perform_grasp()
+
+            if ord('d') in keys and keys[ord('d')] & p.KEY_WAS_TRIGGERED:
+                # Move gripper joints to their individual upper limits
+                print("Opening gripper (moving to upper joint limits)")
+                apply_ik_solution(robot_id, gripper_up_limits, gripper_idxs)
+                print(gripper_up_limits)
+                # grasper.perform_drop()
             
             if ord('m') in keys and keys[ord('m')] & p.KEY_WAS_TRIGGERED:
                 grasper.move_arm([0.35,-0.4,0.2], args.ori, args.side)
@@ -598,8 +613,16 @@ def main():
             p.resetBasePositionAndOrientation(box_id, target_pos, target_orientation_quat)
 
             # Apply IK first using the determined target
-
-            ik_solution = p.calculateInverseKinematics(robot_id, end_effector_index, target_pos, target_orientation_quat)
+            # For human robot in pointing mode, calculate orientation to point at target
+            if is_human_robot:
+                # Get current end effector position to calculate pointing orientation
+                link_state_for_pointing = p.getLinkState(robot_id, end_effector_index)
+                ee_pos_for_pointing = link_state_for_pointing[0]
+                # Calculate the pointing orientation
+                pointing_orientation_quat = get_pointing_quaternion(ee_pos_for_pointing, target_pos)
+                ik_solution = p.calculateInverseKinematics(robot_id, end_effector_index, target_pos, pointing_orientation_quat)
+            else:
+                ik_solution = p.calculateInverseKinematics(robot_id, end_effector_index, target_pos, target_orientation_quat)
             #print(f"IK Solution: {ik_solution}", end="\r")
             apply_ik_solution(robot_id, ik_solution, joint_idxs)
 
@@ -609,6 +632,12 @@ def main():
             actual_orientation_quat = link_state[1] # Actual world orientation (quaternion)
             actual_orientation_euler = p.getEulerFromQuaternion(actual_orientation_quat)
 
+            # --- Draw pointing line from ee to target (for human robot) ---
+            if is_human_robot:
+                if pointing_line_id is not None:
+                    p.removeUserDebugItem(pointing_line_id)
+                pointing_line_id = p.addUserDebugLine(ee_pos, target_pos, [1, 0.5, 0], 2)  # Orange line
+
             line_length = 0.05 # Length of visualization lines
 
             # --- Visualize Desired Orientation (Red Line) ---
@@ -617,7 +646,11 @@ def main():
                 p.removeUserDebugItem(orientation_line_id)
 
             # Calculate end point for the desired orientation line (originating from current ee_pos)
-            rot_matrix_desired = p.getMatrixFromQuaternion(target_orientation_quat) # Use active target orientation
+            # Use pointing orientation when in pointing mode for human robot
+            if is_human_robot:
+                rot_matrix_desired = p.getMatrixFromQuaternion(pointing_orientation_quat)
+            else:
+                rot_matrix_desired = p.getMatrixFromQuaternion(target_orientation_quat) # Use active target orientation
             z_axis_direction_desired = [rot_matrix_desired[2], rot_matrix_desired[5], rot_matrix_desired[8]]
             # Invert the z-axis direction to point upside down
             line_end_desired = [ee_pos[0] - z_axis_direction_desired[0] * line_length,
