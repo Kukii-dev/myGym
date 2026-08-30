@@ -124,16 +124,17 @@ class Robot:
         """
         Load SDF or URDF model of specified robot and place it in the environment to specified position and orientation
         """
+        robot_rel_path = self.robot_path.lstrip("/")
         if self.robot_path[-3:] == 'sdf':
             objects = self.p.loadSDF(
-               os.path.join(pkg_resources.files("myGym"), self.robot_path))
+               os.path.join(pkg_resources.files("myGym"), robot_rel_path))
             self.robot_uid = objects[0]
             self.p.resetBasePositionAndOrientation(self.robot_uid, self.position,
                                               self.orientation)
         else:
 
             self.robot_uid = self.p.loadURDF(
-                os.path.join(pkg_resources.files("myGym"), self.robot_path),
+                os.path.join(pkg_resources.files("myGym"), robot_rel_path),
                 self.position, self.orientation, useFixedBase=self.use_fixed_base, flags=(self.p.URDF_USE_SELF_COLLISION))
         for jid in range(self.p.getNumJoints(self.robot_uid)):
                 self.p.changeDynamics(self.robot_uid, jid,  collisionMargin=0., contactProcessingThreshold=0.0, ccdSweptSphereRadius=0)

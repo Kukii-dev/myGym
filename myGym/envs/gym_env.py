@@ -18,7 +18,7 @@ import importlib.resources as pkg_resources
 from myGym.envs.human import Human
 import myGym.utils.colors as cs
 from myGym.envs.vision_module import get_module_type
-from myGym.envs.natural_language import NaturalLanguage
+from myGym.envs.natural_language import NaturalLanguage, GestureLanguageGenerator
 import torch as th
 from stable_baselines3.common.utils import obs_as_tensor
 
@@ -149,6 +149,10 @@ class GymEnv(CameraEnv):
 
             self.reach_gesture = True
             self.task_type = "AG"
+
+        # Gesture language generator for NL-augmented gesture training
+        self.gesture_nl = GestureLanguageGenerator(seed=kwargs.get("seed", 0)) if self.reach_gesture else None
+        self.current_gesture_phrase = None  # metadata dict for current episode
 
         self.nl_mode = natural_language
         if self.nl_mode:
@@ -436,6 +440,15 @@ class GymEnv(CameraEnv):
                         self.gesture_cubes = goal_objects
                         other_objects = [o for o in goal_objects if o != selected_goal]
 
+                        # Generate natural language phrase for this gesture episode
+                        if self.gesture_nl is not None:
+                            self.current_gesture_phrase = self.gesture_nl.generate_phrase(
+                                target_obj=selected_goal,
+                                all_objects=goal_objects,
+                            )
+                        else:
+                            self.current_gesture_phrase = None
+
                         # Set env_objects and skip the normal flow below
                         self.env_objects = {"env_objects": other_objects + self._randomly_place_objects(self.used_objects)}
                         self.env_objects = {**self.task_objects, **self.env_objects}
@@ -444,6 +457,19 @@ class GymEnv(CameraEnv):
                         self.p.stepSimulation()
                         self._observation = self.get_observation()
                         info = {'d': 1, 'f': int(self.episode_failed), 'o': self._observation}
+                        if self.current_gesture_phrase is not None:
+                            info['gesture_phrase'] = self.current_gesture_phrase
+
+                        # Show the NL phrase in the PyBullet GUI
+                        if self.gui_on and self.current_gesture_phrase is not None:
+                            if self.nl_text_id is not None:
+                                self.p.removeUserDebugItem(self.nl_text_id)
+                            self.nl_text_id = self.p.addUserDebugText(
+                                self.current_gesture_phrase["phrase"],
+                                [2, 0, 1], textSize=1.5,
+                                textColorRGB=[1, 1, 1],
+                            )
+
                         return self.flatten_obs(self._observation.copy()), info
 
                 all_subtask_objects = [x for i, x in enumerate(task_objects_dict) if i != self.task.current_task]
@@ -533,11 +559,12 @@ class GymEnv(CameraEnv):
         info = {'d': 1, 'f': int(self.episode_failed),
                 'o': self._observation}
         if self.gui_on and self.nl_mode:
-            if self.reach_gesture:
-                self.nl.set_current_subtask_description("reach there")
-            self.nl_text_id = self.p.addUserDebugText(self.nl.get_previously_generated_subtask_description(), [2, 0, 1], textSize=1)
-            if only_subtask and self.nl_text_id is not None:
+            if self.nl_text_id is not None:
                 self.p.removeUserDebugItem(self.nl_text_id)
+            self.nl_text_id = self.p.addUserDebugText(
+                self.nl.get_previously_generated_subtask_description(),
+                [2, 0, 1], textSize=1,
+            )
         return self.flatten_obs(self._observation.copy()), info
 
     def shift_next_subtask(self):
@@ -612,6 +639,8 @@ class GymEnv(CameraEnv):
             truncated = self.episode_truncated
             info = {'d': 1, 'f': int(self.episode_failed),
                     'o': self._observation}
+            if self.current_gesture_phrase is not None:
+                info['gesture_phrase'] = self.current_gesture_phrase
         if terminated or truncated:
             self.successful_finish(info) #Maybe only change to 'if terminated'? Probably not
         if self.task.subtask_over:
@@ -732,6 +761,7 @@ class GymEnv(CameraEnv):
         gesture_obs = {
             "human_pointing_target": list(self.human.get_tiago_goal_from_pointing()),
             "human_target_object": self.human_target_object.get_name() if self.human_target_object else None,
+            "gesture_phrase": self.current_gesture_phrase,
         }
         return gesture_obs
 

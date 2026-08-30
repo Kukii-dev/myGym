@@ -2,7 +2,7 @@ import copy
 import itertools
 import re
 from enum import Enum, auto
-from typing import Tuple, List
+from typing import Tuple, List, Dict, Optional
 
 import numpy as np
 
@@ -66,6 +66,246 @@ class TaskType(Enum):
         return [TaskType.PUSH, TaskType.PNP, TaskType.PNPROT, TaskType.PNPSWIPE, TaskType.PNPBGRIP, TaskType.THROW, TaskType.POKE, TaskType.FMRT, TaskType.FMOT]
 
 
+# ---------------------------------------------------------------------------
+# GestureLanguageGenerator — natural language for gesture-based training
+# ---------------------------------------------------------------------------
+
+class GestureLanguageGenerator:
+    """
+    Generates natural language commands for gesture-based TIAgo training.
+
+    On every episode reset the environment calls ``generate_phrase()`` which:
+      1. Picks a random action type (pick_up, move, reach, push, point).
+      2. Fills in a randomly chosen template with the actual object colors,
+         spatial relations, and randomised articles / synonyms.
+      3. Returns a metadata dict that fully describes the sentence so that
+         downstream NLP models can be trained on it.
+
+    Parameters:
+        :param seed: (int) Seed for the random generator
+    """
+
+    # -- phrase templates -------------------------------------------------------
+    # Placeholders:
+    #   {color}      – target object color        {obj}       – object type (cube)
+    #   {ref_color}  – reference object color      {direction} – left / right
+    #   {dir_of}     – "to the left of" / …       {a} / {a2}  – random article
+    PHRASE_TEMPLATES: Dict[str, List[str]] = {
+        "pick_up": [
+            "pick up this {color} {obj}",
+            "pick up the {color} {obj}",
+            "pick up the {obj} next to the {ref_color} {obj}",
+            "pick up the {color} {obj} {dir_of} the {ref_color} {obj}",
+        ],
+        "move": [
+            "move this {color} {obj} to the {direction}",
+            "move the {color} {obj} next to the {ref_color} {obj}",
+            "put this {color} {obj} next to the {ref_color} {obj}",
+            "put the {color} {obj} {dir_of} the {ref_color} {obj}",
+        ],
+        "point": [
+            "point at this {color} {obj}",
+            "point at the {color} {obj}",
+            "point at the {obj} next to the {ref_color} {obj}",
+            "point at the {obj} {dir_of} the {ref_color} {obj}",
+        ],
+    }
+
+    DIRECTIONS = ["left", "right"]
+    DIRECTION_PREPOSITIONS = ["to the left of", "to the right of"]
+    ARTICLES = ["the ", "this ", "that "]
+    # Reference objects in single-gesture phrases get a definite article only —
+    # "this"/"that" would imply a second gesture the human doesn't make.
+    REF_ARTICLES = ["the "]
+    OBJECT_TYPE = "cube"
+
+    # Two-gesture templates: BOTH {color} and {ref_color} objects use deictic
+    # articles because the human physically performs two separate pointing gestures.
+    TWO_GESTURE_TEMPLATES: Dict[str, List[str]] = {
+        "move_to": [
+            "first pick up this {color} {obj} then move it next to this {ref_color} {obj}",
+            "first pick up this {color} {obj} then put it next to this {ref_color} {obj}",
+            "first point at this {color} {obj} then move it to this {ref_color} {obj}",
+            "first point at this {color} {obj} then put it next to this {ref_color} {obj}",
+            "put this {color} {obj} next to this {ref_color} {obj}",
+            "move this {color} {obj} to this {ref_color} {obj}",
+            "place this {color} {obj} next to this {ref_color} {obj}",
+        ],
+    }
+
+    def __init__(self, seed: int = 0):
+        self.rng = np.random.default_rng(seed)
+
+    # -- helpers ----------------------------------------------------------------
+
+    @staticmethod
+    def _get_object_color(obj: EnvObject) -> str:
+        color_name = cs.rgba_to_name(obj.get_color_rgba())
+        return color_name if color_name else "unknown"
+
+    @staticmethod
+    def _get_spatial_relation(obj: EnvObject, ref_obj: EnvObject) -> str:
+        pos = np.array(obj.get_position())
+        ref_pos = np.array(ref_obj.get_position())
+        return "left" if pos[0] > ref_pos[0] else "right"
+
+    # -- public API -------------------------------------------------------------
+
+    def generate_phrase(
+        self,
+        target_obj: EnvObject,
+        all_objects: List[EnvObject],
+        action_type: Optional[str] = None,
+    ) -> Dict:
+        """
+        Generate a random natural language phrase and structured metadata.
+
+        Parameters:
+            :param target_obj: (EnvObject) The object the action refers to
+            :param all_objects: (List[EnvObject]) All objects currently in the scene
+            :param action_type: (str, optional) Force action type; random if None
+
+        Returns:
+            :return: (dict) with keys
+                - phrase            (str)  generated sentence
+                - action_type       (str)  pick_up | move | reach | push | point
+                - target_color      (str)  color name of target object
+                - target_position   (list) [x, y, z]
+                - ref_color         (str|None)  color of reference object
+                - ref_position      (list|None) [x, y, z] of reference object
+                - direction         (str|None)  left / right
+                - tokens            (list) whitespace-split tokens
+                - object_type       (str)  e.g. "cube"
+                - num_tokens        (int)  len(tokens)
+        """
+        if action_type is None:
+            action_type = str(self.rng.choice(list(self.PHRASE_TEMPLATES.keys())))
+
+        templates = self.PHRASE_TEMPLATES[action_type]
+        target_color = self._get_object_color(target_obj)
+        target_pos = list(target_obj.get_position())
+
+        # reference object (any object that is not the target)
+        other_objects = [o for o in all_objects if o is not target_obj]
+        ref_obj = self.rng.choice(other_objects) if other_objects else None
+        ref_color = self._get_object_color(ref_obj) if ref_obj else None
+        ref_pos = list(ref_obj.get_position()) if ref_obj else None
+
+        # spatial direction
+        if ref_obj is not None:
+            direction = self._get_spatial_relation(target_obj, ref_obj)
+        else:
+            direction = str(self.rng.choice(self.DIRECTIONS))
+        dir_of = self.DIRECTION_PREPOSITIONS[self.DIRECTIONS.index(direction)]
+
+        # filter templates that need a reference when none is available
+        usable = [t for t in templates
+                  if ref_obj is not None or
+                  ("{ref_color}" not in t and "{dir_of}" not in t and "{a2}" not in t)]
+        if not usable:
+            usable = [f"{action_type.replace('_', ' ')} {{a}}{{color}} {{obj}}"]
+
+        template = str(self.rng.choice(usable))
+        a  = str(self.rng.choice(self.ARTICLES))      # target — deictic ok
+        a2 = str(self.rng.choice(self.REF_ARTICLES))  # reference — always "the"
+
+        phrase = template.format(
+            color=target_color,
+            obj=self.OBJECT_TYPE,
+            ref_color=ref_color or "",
+            direction=direction,
+            dir_of=dir_of,
+            a=a,
+            a2=a2,
+        )
+        phrase = re.sub(r" +", " ", phrase).strip()
+        tokens = phrase.split()
+
+        return {
+            "phrase": phrase,
+            "action_type": action_type,
+            "target_color": target_color,
+            "target_position": target_pos,
+            "ref_color": ref_color,
+            "ref_position": ref_pos,
+            "direction": direction,
+            "tokens": tokens,
+            "object_type": self.OBJECT_TYPE,
+            "num_tokens": len(tokens),
+        }
+
+    def generate_batch(
+        self,
+        target_obj: EnvObject,
+        all_objects: List[EnvObject],
+        n: int = 5,
+    ) -> List[Dict]:
+        """
+        Generate *n* phrase variants for the same scene, cycling through action types.
+        """
+        action_types = list(self.PHRASE_TEMPLATES.keys())
+        return [
+            self.generate_phrase(target_obj, all_objects,
+                                 action_type=action_types[i % len(action_types)])
+            for i in range(n)
+        ]
+
+    def generate_two_gesture_phrase(
+        self,
+        target_obj: EnvObject,
+        ref_obj: EnvObject,
+        action_type: Optional[str] = None,
+    ) -> Dict:
+        """
+        Generate a phrase for a two-gesture scenario where the human physically
+        points at *both* target_obj (gesture 1) and ref_obj (gesture 2).
+
+        Both objects are referred to with deictic "this" because the human
+        actually performs two distinct pointing gestures.
+
+        Parameters:
+            :param target_obj:  (EnvObject) Object the first gesture points at
+            :param ref_obj:     (EnvObject) Object the second gesture points at
+            :param action_type: (str, optional) "move_to" | "push_to"; random if None
+
+        Returns:
+            :return: (dict) with keys phrase, action_type, target_color,
+                     ref_color, target_position, ref_position, tokens, num_tokens
+        """
+        if action_type is None:
+            action_type = str(self.rng.choice(list(self.TWO_GESTURE_TEMPLATES.keys())))
+
+        templates = self.TWO_GESTURE_TEMPLATES[action_type]
+        template  = str(self.rng.choice(templates))
+
+        target_color = self._get_object_color(target_obj)
+        ref_color    = self._get_object_color(ref_obj)
+
+        phrase = template.format(
+            color=target_color,
+            ref_color=ref_color,
+            obj=self.OBJECT_TYPE,
+        )
+        phrase = re.sub(r" +", " ", phrase).strip()
+        tokens = phrase.split()
+
+        return {
+            "phrase":           phrase,
+            "action_type":      action_type,
+            "target_color":     target_color,
+            "ref_color":        ref_color,
+            "target_position":  list(target_obj.get_position()),
+            "ref_position":     list(ref_obj.get_position()),
+            "tokens":           tokens,
+            "num_tokens":       len(tokens),
+            "num_gestures":     2,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Legacy helpers & classes (kept for backward-compatibility with nl_mode)
+# ---------------------------------------------------------------------------
+
 class VirtualObject:
     def __init__(self, obj: EnvObject):
         self.obj: EnvObject = obj
@@ -113,7 +353,6 @@ class VirtualObject:
         return object_matches
 
     def get_position(self) -> np.array:
-        # TODO: Replace with a virtual position that can be dynamically changed
         return np.array(self.obj.get_position())
 
 
@@ -182,8 +421,6 @@ class VirtualEnv:
         return self.objects if not excluding else [o for o in self.objects if o not in excluding]
 
     def _get_all_objects_in_relation(self, obj: VirtualObject, relation: str) -> List[VirtualObject]:
-        # TODO: Check whether the angle between objects isn't too large
-        # TODO: Add the relations above/below
         objects = []
         p1 = obj.get_position()
 
@@ -211,11 +448,8 @@ class VirtualEnv:
 
 class NaturalLanguage:
     """
-    Class for generating a natural language description and producing new natural language tasks based on the given environment.
-
-    Parameters:
-        :param env: (GymEnv) environment to generate description from
-        :param seed: (int) seed for NumPy's random generator
+    Legacy NL class kept for backward compatibility with nl_mode.
+    For gesture training, use GestureLanguageGenerator instead.
     """
     def __init__(self, env, seed=0):
         self.venv: VirtualEnv = VirtualEnv(env)
@@ -223,27 +457,12 @@ class NaturalLanguage:
         self.rng = np.random.default_rng(seed)
 
     def get_venv(self) -> VirtualEnv:
-        """
-        Return internal virtual environment.
-
-        Returns:
-            :return venv: (VirtualEnv) virtual environment
-        """
         return self.venv
 
     def set_current_subtask_description(self, desc: str):
-        """
-        Set a description for the internal environment.
-        """
         self.current_subtask_description = desc
 
     def get_previously_generated_subtask_description(self) -> str:
-        """
-        Return a previously generated subtask description.
-
-        Returns:
-            :return desc: (str) description, which was previously generated by the corresponding method
-        """
         return self.current_subtask_description
 
     @staticmethod
@@ -251,19 +470,14 @@ class NaturalLanguage:
         task_type = venv.get_task_type() if task_type is None else task_type
         d1, d2 = _unpack_1_or_2_element_tuple(objects_descriptions)
 
-        # pattern reach
         if task_type is TaskType.REACH:
             tokens = ["reach", d1]
-
-        # pattern press
         elif task_type is TaskType.PRESS:
             tokens = ["press", d1]
         elif task_type is TaskType.TURN:
             tokens = ["turn", d1]
         elif task_type is TaskType.SWITCH:
             tokens = ["switch", d1]
-
-        # pattern push
         elif task_type is TaskType.PUSH:
             tokens = ["push", d1, "to the same position as", d2]
         elif task_type is TaskType.PNP:
@@ -287,10 +501,8 @@ class NaturalLanguage:
 
     @staticmethod
     def _decompose_subtask_description(desc: str):
-        # pattern reach
         if desc.startswith("reach"):
             return TaskType.REACH, _remove_first_word(desc)
-
         elif desc.startswith("push") or desc.startswith("throw") or desc.startswith("poke"):
             task_type = TaskType.PUSH if desc.startswith("push") else (TaskType.THROW if desc.startswith("throw") else TaskType.POKE)
             return task_type, _remove_first_word(desc).split(" to the same position as ")
@@ -346,11 +558,8 @@ class NaturalLanguage:
             return VirtualObject.extract_object_from_name_with_properties(desc, all_objects)
 
     def generate_subtask_with_random_description(self) -> None:
-        """
-        Generate the description of the current subtask and save it to the internal variable.
-        """
         task_type = self.venv.get_task_type()
-        assert task_type in TaskType.get_pattern_push_task_types() or task_type == TaskType.REACH  # TODO: Implement the remaining tasks
+        assert task_type in TaskType.get_pattern_push_task_types() or task_type == TaskType.REACH
 
         if task_type in TaskType.get_pattern_push_task_types():
             d1 = self.rng.choice(self._get_object_descriptions(self.venv, self.rng.choice(self.venv.get_real_objects())))
@@ -374,16 +583,6 @@ class NaturalLanguage:
             self.current_subtask_description = self._form_subtask_description(self.venv, d2)
 
     def extract_subtask_info_from_description(self, desc: str) -> Tuple[str, str, int, EnvObject, EnvObject]:
-        """
-        Given a list of environment objects (using one of the methods above), extract from a natural language
-        description all the information needed for reproducing the task.
-
-        Parameters:
-            :param desc: (str) natural language description of the subtask
-        Returns:
-            :return task_type, reward, n_nets, init, goal: (tuple) task type, corresponding reward, number of neural networks,
-            initial object, goal object
-        """
         desc = re.sub(' +', ' ', desc.strip().lower())
         task_type, descs = self._decompose_subtask_description(desc)
         assert task_type in TaskType.get_pattern_push_task_types() or task_type == TaskType.REACH
@@ -405,9 +604,6 @@ class NaturalLanguage:
         return task_type.to_string(), reward, n_nets, init.get_env_object() if init is not None else init, goal.get_env_object()
 
     def generate_random_description_for_current_subtask(self) -> None:
-        """
-        Generate a random description (with random object relations) for the current subtask and save it internally.
-        """
         o1, o2 = _unpack_1_or_2_element_tuple(self.venv.get_subtask_objects()[self.venv.get_current_subtask_idx()])
         task_type = self.venv.get_task_type()
         d1 = self.rng.choice(self._get_object_descriptions(self.venv, o1))
@@ -416,10 +612,6 @@ class NaturalLanguage:
         self.set_current_subtask_description(self._form_subtask_description(self.venv, *ds, task_type=task_type))
 
     def generate_task_description(self) -> str:
-        """
-        Deprecated function. Have been used for producing a description of a multistep task. But the function could be
-        updated to satisfy the new interface of the NL module.
-        """
         subtasks = []
         task_type = self.venv.get_task_type()
 
@@ -435,48 +627,7 @@ class NaturalLanguage:
 
         return ", ".join(subtasks)
 
-    def _generate_new_subtasks_from_1_env(self, task_desc: str, venv: VirtualEnv) -> List[Tuple[str, VirtualEnv]]:
-        """
-        Deprecated function. Have been used for generating new subtasks based on the current environment state. The function
-        can be updated and used in the future.
-        """
-        tuples = []
-        main_clauses, main_clauses_with_to, place_preposition_clauses = NaturalLanguage._get_movable_object_clauses(venv)
-
-        if task_desc is not "":
-            task_desc += ", "
-
-        # pattern reach
-        for c in itertools.chain(main_clauses, place_preposition_clauses):
-            tuples.append((task_desc + NaturalLanguage._form_subtask_description(venv, TaskType.REACH, c), venv))
-
-        # pattern push
-        task_types = [TaskType.PUSH, TaskType.PNP, TaskType.POKE, TaskType.THROW]
-        for c2 in itertools.chain(main_clauses_with_to, place_preposition_clauses):
-            for tt, c1 in zip(task_types, self.rng.choice(main_clauses, len(task_types), replace=True)):
-                tuples.append((task_desc + NaturalLanguage._form_subtask_description(venv, tt, c1, c2), venv))
-
-        return tuples
-
-    def _generate_new_subtasks(self, tuples: List[Tuple[str, VirtualEnv]]) -> List[Tuple[str, VirtualEnv]]:
-        """
-        Deprecated function. Have been used for generating new subtasks based on the current environment state.
-        Specifically, this function takes tuples of environment-NL description and produces new tuples
-        extended by a 1 new subtask. The function can be updated to satisfy new NL mode interface and can be used in the future.
-        """
-        return list(itertools.chain(*[self._generate_new_subtasks_from_1_env(*t) for t in tuples]))
-
     def generate_new_tasks(self, max_tasks=10, max_subtasks=3) -> List[str]:
-        """
-        Deprecated in a new NL mode interface, but it can be updated for reuse.
-        Generate new natural language tasks from the given environment.
-
-        Parameters:
-            :param max_tasks: (int) Maximum number of tasks. If it is possible to generate more tasks, the function will randomly pick max_tasks tasks
-            :param max_subtasks: (int) Maximum number of subtasks in one task
-        Returns:
-            :return new_tasks: (list) List of newly generated tasks
-        """
         if self.venv.get_task_type() in TaskType.get_pattern_press_task_types():
             raise NotImplementedError()
 

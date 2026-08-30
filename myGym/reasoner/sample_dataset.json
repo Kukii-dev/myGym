@@ -1,0 +1,87 @@
+[
+  {
+    "pose": [
+      [0.0, 1.5, 0.0], [0.0, 1.3, 0.0], [0.15, 1.3, 0.0], [0.3, 1.1, 0.0],
+      [0.4, 0.9, 0.1], [-0.15, 1.3, 0.0], [-0.3, 1.1, 0.0], [-0.4, 0.9, -0.1],
+      [0.08, 1.0, 0.0], [0.08, 0.6, 0.0], [0.08, 0.0, 0.0],
+      [-0.08, 1.0, 0.0], [-0.08, 0.6, 0.0], [-0.08, 0.0, 0.0],
+      [0.05, 1.5, 0.05], [-0.05, 1.5, 0.05], [0.1, 1.55, 0.0], [-0.1, 1.55, 0.0]
+    ],
+    "objects": [
+      {"position": [0.5, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "red", "shape": "cube", "texture": "smooth"},
+      {"position": [0.3, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "blue", "shape": "cube", "texture": "smooth"},
+      {"position": [0.7, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "large", "color": "green", "shape": "sphere", "texture": "rough"}
+    ],
+    "instruction": "pick up the red cube",
+    "target_object_idx": 0,
+    "action_sequence": ["A", "G", "M", "D"]
+  },
+  {
+    "pose": [
+      [0.0, 1.5, 0.0], [0.0, 1.3, 0.0], [0.15, 1.3, 0.0], [0.35, 1.1, -0.1],
+      [0.5, 0.85, 0.2], [-0.15, 1.3, 0.0], [-0.3, 1.1, 0.0], [-0.4, 0.9, -0.1],
+      [0.08, 1.0, 0.0], [0.08, 0.6, 0.0], [0.08, 0.0, 0.0],
+      [-0.08, 1.0, 0.0], [-0.08, 0.6, 0.0], [-0.08, 0.0, 0.0],
+      [0.05, 1.5, 0.05], [-0.05, 1.5, 0.05], [0.1, 1.55, 0.0], [-0.1, 1.55, 0.0]
+    ],
+    "objects": [
+      {"position": [0.5, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "red", "shape": "cube", "texture": "smooth"},
+      {"position": [0.3, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "blue", "shape": "cube", "texture": "smooth"},
+      {"position": [0.7, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "large", "color": "green", "shape": "sphere", "texture": "rough"}
+    ],
+    "instruction": "grab the blue cube next to the red cube",
+    "target_object_idx": 1,
+    "action_sequence": ["A", "G", "M", "D"]
+  },
+  {
+    "pose": [
+      [0.0, 1.5, 0.0], [0.0, 1.3, 0.0], [0.15, 1.3, 0.0], [0.3, 1.15, 0.05],
+      [0.45, 1.0, 0.15], [-0.15, 1.3, 0.0], [-0.3, 1.1, 0.0], [-0.4, 0.9, -0.1],
+      [0.08, 1.0, 0.0], [0.08, 0.6, 0.0], [0.08, 0.0, 0.0],
+      [-0.08, 1.0, 0.0], [-0.08, 0.6, 0.0], [-0.08, 0.0, 0.0],
+      [0.05, 1.5, 0.05], [-0.05, 1.5, 0.05], [0.1, 1.55, 0.0], [-0.1, 1.55, 0.0]
+    ],
+    "objects": [
+      {"position": [0.5, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "red", "shape": "cube", "texture": "smooth"},
+      {"position": [0.3, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "blue", "shape": "cube", "texture": "smooth"},
+      {"position": [0.7, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "large", "color": "green", "shape": "sphere", "texture": "rough"}
+    ],
+    "instruction": "push the green sphere to the right",
+    "target_object_idx": 2,
+    "action_sequence": ["A", "G", "W"]
+  },
+  {
+    "pose": [
+      [0.0, 1.5, 0.0], [0.0, 1.3, 0.0], [0.15, 1.3, 0.0], [0.3, 1.1, 0.0],
+      [0.4, 0.9, 0.1], [-0.15, 1.3, 0.0], [-0.3, 1.1, 0.0], [-0.4, 0.9, -0.1],
+      [0.08, 1.0, 0.0], [0.08, 0.6, 0.0], [0.08, 0.0, 0.0],
+      [-0.08, 1.0, 0.0], [-0.08, 0.6, 0.0], [-0.08, 0.0, 0.0],
+      [0.05, 1.5, 0.05], [-0.05, 1.5, 0.05], [0.1, 1.55, 0.0], [-0.1, 1.55, 0.0]
+    ],
+    "objects": [
+      {"position": [0.5, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "red", "shape": "cube", "texture": "smooth"},
+      {"position": [0.3, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "medium", "color": "yellow", "shape": "cylinder", "texture": "smooth"},
+      {"position": [0.1, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "blue", "shape": "cube", "texture": "rough"},
+      {"position": [0.7, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "large", "color": "green", "shape": "sphere", "texture": "rough"}
+    ],
+    "instruction": "move the red cube to the left of the yellow cylinder",
+    "target_object_idx": 0,
+    "action_sequence": ["A", "G", "M", "D", "W"]
+  },
+  {
+    "pose": [
+      [0.0, 1.5, 0.0], [0.0, 1.3, 0.0], [0.15, 1.3, 0.0], [0.25, 1.15, 0.1],
+      [0.35, 1.0, 0.2], [-0.15, 1.3, 0.0], [-0.3, 1.1, 0.0], [-0.4, 0.9, -0.1],
+      [0.08, 1.0, 0.0], [0.08, 0.6, 0.0], [0.08, 0.0, 0.0],
+      [-0.08, 1.0, 0.0], [-0.08, 0.6, 0.0], [-0.08, 0.0, 0.0],
+      [0.05, 1.5, 0.05], [-0.05, 1.5, 0.05], [0.1, 1.55, 0.0], [-0.1, 1.55, 0.0]
+    ],
+    "objects": [
+      {"position": [0.2, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "red", "shape": "cube", "texture": "smooth"},
+      {"position": [0.5, 0.8, 0.0], "orientation": [0.0, 0.0, 0.0], "size": "small", "color": "blue", "shape": "cube", "texture": "smooth"}
+    ],
+    "instruction": "point at the blue cube",
+    "target_object_idx": 1,
+    "action_sequence": ["A"]
+  }
+]

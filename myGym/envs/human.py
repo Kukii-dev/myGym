@@ -98,7 +98,7 @@ class Human:
         path = robot_info['path']
         position = robot_info['position']
         orientation = robot_info['orientation']
-        path = os.path.join(pkg_resources.files("myGym"), path)
+        path = os.path.join(pkg_resources.files("myGym"), path.lstrip("/"))
         orientation = self.p.getQuaternionFromEuler(orientation)
 
         if path[-3:] == 'sdf':
